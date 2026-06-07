@@ -23,11 +23,11 @@ const VALID_URL_REGEX = /^https?:\/\/.+/i;
 async function start() {
     await fastify.register(cors, { origin: true });
 
-    await fastify.register(rateLimit, {
-        max: 100,
-        timeWindow: '1 minute',
-        keyGenerator: (request) => request.ip,
-    });
+    // await fastify.register(rateLimit, {
+    //     max: 100,
+    //     timeWindow: '1 minute',
+    //     keyGenerator: (request) => request.ip,
+    // });
 
     fastify.get('/health', async (request, reply) => {
         const health = { status: 'healthy', database: 'connected', redis: 'connected' };
