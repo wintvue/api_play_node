@@ -38,7 +38,7 @@ export default function () {
   });
 
   const res = http.post(
-    `${BASE_URL}/shorten`,
+    `${BASE_URL}/shorten/redis`,
     payload,
     {
       headers: {
