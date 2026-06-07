@@ -3,6 +3,7 @@ const { Pool } = require('pg');
 const { nanoid } = require('nanoid');
 const rateLimit = require('@fastify/rate-limit');
 const cors = require('@fastify/cors');
+const Redis = require('ioredis');
 require('dotenv').config();
 
 const pool = new Pool({
@@ -12,7 +13,10 @@ const pool = new Pool({
     connectionTimeoutMillis: 2000,
 });
 
+const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379/0');
+
 const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+const REDIS_SHORT_TTL = parseInt(process.env.REDIS_SHORT_TTL, 10) || 3600;
 
 const VALID_URL_REGEX = /^https?:\/\/.+/i;
 
@@ -26,11 +30,17 @@ async function start() {
     });
 
     fastify.get('/health', async (request, reply) => {
-        const health = { status: 'healthy', database: 'connected' };
+        const health = { status: 'healthy', database: 'connected', redis: 'connected' };
         try {
             await pool.query('SELECT 1');
         } catch (err) {
             health.database = `disconnected: ${err.message}`;
+            health.status = 'unhealthy';
+        }
+        try {
+            await redis.ping();
+        } catch (err) {
+            health.redis = `disconnected: ${err.message}`;
             health.status = 'unhealthy';
         }
         return reply.send(health);
@@ -77,6 +87,55 @@ async function start() {
                 short_url: `${BASE_URL}/${result.rows[0].short_code}`,
                 original_url: url,
             });
+        } catch (err) {
+            request.log.error(err);
+            return reply.code(500).send({ error: 'Internal server error' });
+        }
+    });
+
+    fastify.post('/shorten/redis', {
+        schema: {
+            body: {
+                type: 'object',
+                required: ['url'],
+                properties: {
+                    url: { type: 'string', minLength: 1, maxLength: 2048 },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        try {
+            const { url } = request.body;
+
+            if (!VALID_URL_REGEX.test(url)) {
+                return reply.code(400).send({ error: 'Invalid URL format. URL must start with http:// or https://' });
+            }
+
+            const code = nanoid(7);
+            await redis.setex(`redis_url:${code}`, REDIS_SHORT_TTL, url);
+
+            return reply.send({
+                short_code: code,
+                short_url: `${BASE_URL}/${code}`,
+                original_url: url,
+                ttl: REDIS_SHORT_TTL,
+            });
+        } catch (err) {
+            request.log.error(err);
+            return reply.code(500).send({ error: 'Internal server error' });
+        }
+    });
+
+    fastify.get('/redis/:code', async (request, reply) => {
+        try {
+            const { code } = request.params;
+            const originalUrl = await redis.get(`redis_url:${code}`);
+
+            if (!originalUrl) {
+                return reply.code(404).send({ error: 'URL not found in Redis' });
+            }
+
+            return reply.redirect(originalUrl);
         } catch (err) {
             request.log.error(err);
             return reply.code(500).send({ error: 'Internal server error' });
@@ -136,5 +195,17 @@ async function start() {
         process.exit(1);
     }
 }
+
+process.on('SIGINT', async () => {
+    await redis.quit();
+    pool.end();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    await redis.quit();
+    pool.end();
+    process.exit(0);
+});
 
 start();
